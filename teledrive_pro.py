@@ -3,6 +3,7 @@ import logging
 import re
 import io
 import tempfile
+import json
 from collections import defaultdict
 from datetime import datetime, timedelta
 from urllib.parse import urlparse, parse_qs
@@ -171,37 +172,39 @@ def initialize_drive_service():
     creds = None
     
     try:
-        # Create temporary service for initial access
-        temp_service = build('drive', 'v3', 
-                           credentials=None,
-                           static_discovery=False)
+        # First try to get credentials from environment variable
+        if os.getenv('GOOGLE_CREDENTIALS_JSON'):
+            creds = Credentials.from_authorized_user_info(
+                json.loads(os.getenv('GOOGLE_CREDENTIALS_JSON')), 
+                SCOPES
+            )
         
-        # Get credentials from Drive
-        creds_file = get_credentials_file_from_drive(temp_service, 'credentials.json')
-        if not creds_file:
-            logger.error("Missing credentials.json in Drive folder")
-            return
-            
-        # Check for existing token
-        token_file = get_credentials_file_from_drive(temp_service, 'token.json')
-        
-        if token_file:
-            creds = Credentials.from_authorized_user_file(token_file, SCOPES)
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-                save_token_to_drive(creds)
-        
+        # If no env credentials, try to get from Drive
         if not creds or not creds.valid:
-            logger.info("Admin needs to authenticate via /auth command")
-            return
+            # Create temporary service for initial access
+            temp_service = build('drive', 'v3', 
+                               credentials=None,
+                               static_discovery=False)
             
-        # Build the actual service
-        drive_service = build('drive', 'v3', 
-                            credentials=creds,
-                            static_discovery=False)
-        load_subscribed_users()
-        logger.info("Drive service initialized successfully")
-        
+            # Get credentials from Drive
+            creds_file = get_credentials_file_from_drive(temp_service, 'credentials.json')
+            if creds_file:
+                flow = Flow.from_client_secrets_file(
+                    creds_file,
+                    scopes=SCOPES
+                )
+                creds = flow.run_local_server(port=0)
+                
+        if creds and creds.valid:
+            # Build the actual service
+            drive_service = build('drive', 'v3', 
+                                credentials=creds,
+                                static_discovery=False)
+            load_subscribed_users()
+            logger.info("Drive service initialized successfully")
+        else:
+            logger.warning("Drive service not initialized - waiting for admin auth")
+            
     except Exception as e:
         logger.error(f"Error initializing Drive service: {e}")
 
@@ -1230,8 +1233,11 @@ def main():
         # Initialize Drive service
         initialize_drive_service()
 
-        # Create application
-        application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+        # Create application with job queue
+        application = Application.builder() \
+            .token(TELEGRAM_BOT_TOKEN) \
+            .concurrent_updates(True) \
+            .build()
 
         # Admin auth conversation
         admin_auth_conv = ConversationHandler(
@@ -1282,8 +1288,11 @@ def main():
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         application.add_error_handler(error_handler)
 
-        # Scheduled job to reload users
-        application.job_queue.run_repeating(reload_users, interval=300, first=10)
+        # Scheduled job to reload users if job queue is available
+        if application.job_queue:
+            application.job_queue.run_repeating(reload_users, interval=300, first=10)
+        else:
+            logger.warning("Job queue not available - scheduled tasks disabled")
 
         # Start bot
         logger.info("Starting bot...")
