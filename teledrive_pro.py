@@ -473,7 +473,7 @@ async def handle_auth_code(update: Update, context: ContextTypes.DEFAULT_TYPE, c
     
     try:
         flow = pending_authorizations[user_id]
-        flow.fetch_token(code=code)
+        flow.fetch_token(code=code)  # Fixed: Added closing parenthesis
         creds = flow.credentials
         token_path = get_user_token_path(user_id)
         
@@ -491,13 +491,13 @@ async def handle_auth_code(update: Update, context: ContextTypes.DEFAULT_TYPE, c
             chat_id=user_id,
             text="✅ *Authorization Successful!*",
             parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            reply_markup=InlineKeyboardMarkup(keyboard))
     except Exception as e:
         await context.bot.send_message(
             chat_id=user_id,
             text=f"❌ *Authorization Failed*\n\nError: `{str(e)}`",
             parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔑 Try Again", callback_data='start_auth')]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔑 Try Again", callback_data='start_auth')]]))
     
     return ConversationHandler.END
 
