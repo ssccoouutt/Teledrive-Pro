@@ -30,11 +30,11 @@ TELEGRAM_BOT_TOKEN = '7404351306:AAHiqgrn0r1uctvPfB1yNyns5qHcMYqatp4'
 GOOGLE_DRIVE_FOLDER_ID = '1GLGkmpm-_h0dw-lc0mmJE2i1Ma0YrAKm'
 ADMIN_USER_ID = 990321391
 WHATSAPP_LINK = "https://wa.me/923247220362"
-REQUIRED_CHANNEL = '@TechZoneX'  # Channel username with @
+REQUIRED_CHANNEL = '@TechZoneX'
 PREMIUM_FILE_ID = '1726HMqaHlLgiOpvjIeqkOMCq0zrTwitR'
 ACTIVITY_FILE_ID = '1621J8IK0m98fVgxNqdLSuRYlJydI1PjY'
 
-# Updated Plan Limits
+# Plan Limits
 PLAN_LIMITS = {
     'free': {
         'daily': 1,
@@ -45,13 +45,13 @@ PLAN_LIMITS = {
     'basic': {
         'daily': 10,
         'size': 20 * 1024**3,  # 20GB
-        'files': 150,           # 150 files
+        'files': 150,          # 150 files
         'duration': '1 week'
     },
     'premium': {
         'daily': 30,
-        'size': 100 * 1024**3,  # 100GB
-        'files': 500,            # 500 files
+        'size': 100 * 1024**3, # 100GB
+        'files': 500,          # 500 files
         'duration': '1 week'
     }
 }
@@ -65,8 +65,8 @@ PRICING = {
 # Payment Methods
 PAYMENT_METHODS = ["Easypaisa", "Jazzcash", "Binance"]
 
-# Contact Text with updated WhatsApp link
-CONTACT_TEXT = "🔗 Contact [@itszeeshan196](tg://user?id=990321391) or [WhatsApp]({}) to upgrade".format(WHATSAPP_LINK)
+# Contact Text
+CONTACT_TEXT = f"🔗 Contact [@itszeeshan196](tg://user?id=990321391) or [WhatsApp]({WHATSAPP_LINK}) to upgrade"
 
 # Initialize logging
 logging.basicConfig(
@@ -74,6 +74,10 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Suppress specific warnings
+logging.getLogger('googleapiclient.discovery_cache').setLevel(logging.ERROR)
+logging.getLogger('google.auth.compute_engine').setLevel(logging.ERROR)
 
 # Global variables
 pending_authorizations = {}
@@ -103,19 +107,18 @@ FILE_TYPES = {
 }
 
 def get_credentials_file_from_drive(service, filename):
-    """Download credentials file from Google Drive folder."""
+    """Download file from Google Drive folder."""
     try:
         results = service.files().list(
             q=f"'{GOOGLE_DRIVE_FOLDER_ID}' in parents and name='{filename}'",
             pageSize=1,
             fields="files(id, name)"
         ).execute()
-        items = results.get('files', [])
         
-        if not items:
+        if not results.get('files'):
             return None
             
-        file_id = items[0]['id']
+        file_id = results['files'][0]['id']
         request = service.files().get_media(fileId=file_id)
         file_content = request.execute()
         
@@ -131,7 +134,7 @@ def get_credentials_file_from_drive(service, filename):
         return None
 
 def save_token_to_drive(creds):
-    """Save token to Google Drive folder."""
+    """Save credentials to Google Drive folder."""
     try:
         token_content = creds.to_json()
         
@@ -140,16 +143,15 @@ def save_token_to_drive(creds):
             pageSize=1,
             fields="files(id)"
         ).execute()
-        items = results.get('files', [])
         
         media = MediaIoBaseUpload(
             io.BytesIO(token_content.encode('utf-8')),
             mimetype='application/json'
         )
         
-        if items:
+        if results.get('files'):
             drive_service.files().update(
-                fileId=items[0]['id'],
+                fileId=results['files'][0]['id'],
                 media_body=media
             ).execute()
         else:
@@ -169,16 +171,18 @@ def initialize_drive_service():
     creds = None
     
     try:
-        # Create minimal service to access Drive folder
-        temp_service = build('drive', 'v3', credentials=None)
+        # Create temporary service for initial access
+        temp_service = build('drive', 'v3', 
+                           credentials=None,
+                           static_discovery=False)
         
-        # Get credentials.json from Drive
+        # Get credentials from Drive
         creds_file = get_credentials_file_from_drive(temp_service, 'credentials.json')
         if not creds_file:
-            logger.error("Could not download credentials.json from Drive")
+            logger.error("Missing credentials.json in Drive folder")
             return
             
-        # Get token.json from Drive if exists
+        # Check for existing token
         token_file = get_credentials_file_from_drive(temp_service, 'token.json')
         
         if token_file:
@@ -188,16 +192,13 @@ def initialize_drive_service():
                 save_token_to_drive(creds)
         
         if not creds or not creds.valid:
-            flow = Flow.from_client_secrets_file(
-                creds_file,
-                scopes=SCOPES,
-                redirect_uri='http://localhost:8080'
-            )
-            auth_url, _ = flow.authorization_url(prompt='consent')
-            logger.info(f"Admin needs to authenticate via: {auth_url}")
+            logger.info("Admin needs to authenticate via /auth command")
             return
             
-        drive_service = build('drive', 'v3', credentials=creds)
+        # Build the actual service
+        drive_service = build('drive', 'v3', 
+                            credentials=creds,
+                            static_discovery=False)
         load_subscribed_users()
         logger.info("Drive service initialized successfully")
         
@@ -347,7 +348,7 @@ async def auth_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
     
     try:
-        temp_service = build('drive', 'v3', credentials=None)
+        temp_service = build('drive', 'v3', credentials=None, static_discovery=False)
         creds_file = get_credentials_file_from_drive(temp_service, 'credentials.json')
         if not creds_file:
             await update.message.reply_text("❌ Missing credentials in Drive", parse_mode='Markdown')
@@ -400,7 +401,7 @@ async def handle_admin_auth_code(update: Update, context: ContextTypes.DEFAULT_T
         del pending_authorizations[user_id]
         
         global drive_service
-        drive_service = build('drive', 'v3', credentials=creds)
+        drive_service = build('drive', 'v3', credentials=creds, static_discovery=False)
         load_subscribed_users()
         
         await update.message.reply_text(
@@ -425,6 +426,72 @@ async def cancel_admin_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await query.edit_message_text("❌ Authorization cancelled", parse_mode='Markdown')
     return ConversationHandler.END
+
+async def add_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /add command (admin only)."""
+    user = update.effective_user
+    
+    if user.id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Admin only command", parse_mode='Markdown')
+        return
+    
+    args = context.args
+    if len(args) != 2:
+        await update.message.reply_text("Usage: /add [user_id] [basic|premium]", parse_mode='Markdown')
+        return
+    
+    try:
+        user_id = int(args[0])
+        tier = args[1].lower()
+        if tier not in ['basic', 'premium']:
+            raise ValueError
+        
+        if tier == 'premium':
+            BASIC_USERS.discard(user_id)
+            PREMIUM_USERS.add(user_id)
+        else:
+            PREMIUM_USERS.discard(user_id)
+            BASIC_USERS.add(user_id)
+        
+        if save_subscribed_users():
+            await update.message.reply_text(f"✅ User {user_id} added to {tier} tier", parse_mode='Markdown')
+        else:
+            await update.message.reply_text("❌ Failed to save users", parse_mode='Markdown')
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str(e)}", parse_mode='Markdown')
+
+async def remove_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /remove command (admin only)."""
+    user = update.effective_user
+    
+    if user.id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Admin only command", parse_mode='Markdown')
+        return
+    
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: /remove [user_id|all]", parse_mode='Markdown')
+        return
+    
+    target = args[0].lower()
+    
+    try:
+        if target == 'all':
+            PREMIUM_USERS.clear()
+            BASIC_USERS.clear()
+            msg = "✅ Removed all users"
+        else:
+            user_id = int(target)
+            PREMIUM_USERS.discard(user_id)
+            BASIC_USERS.discard(user_id)
+            msg = f"✅ Removed user {user_id}"
+        
+        if save_subscribed_users():
+            await update.message.reply_text(msg, parse_mode='Markdown')
+        else:
+            await update.message.reply_text("❌ Failed to save changes", parse_mode='Markdown')
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str(e)}", parse_mode='Markdown')
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send welcome message."""
@@ -715,7 +782,7 @@ async def start_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     
     try:
-        temp_service = build('drive', 'v3', credentials=None)
+        temp_service = build('drive', 'v3', credentials=None, static_discovery=False)
         creds_file = get_credentials_file_from_drive(temp_service, 'credentials.json')
         if not creds_file:
             await query.edit_message_text("❌ Configuration error", parse_mode='Markdown')
@@ -886,7 +953,7 @@ async def handle_drive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         # Extract folder ID
         folder_id = re.search(r'/folders/([a-zA-Z0-9_-]+)', update.message.text).group(1)
-        service = build('drive', 'v3', credentials=creds)
+        service = build('drive', 'v3', credentials=creds, static_discovery=False)
         
         # Check folder size and file count
         total_files, total_size = count_files_and_size(service, folder_id)
@@ -947,7 +1014,7 @@ async def copy_folder_process(context: ContextTypes.DEFAULT_TYPE, user_id: int, 
             )
             return
             
-        service = build('drive', 'v3', credentials=creds)
+        service = build('drive', 'v3', credentials=creds, static_discovery=False)
         
         await update_progress(context, user_id, "🔍 Analyzing folder...")
         total_files, total_size = count_files_and_size(service, folder_id)
@@ -1177,7 +1244,8 @@ def main():
             fallbacks=[
                 CallbackQueryHandler(cancel_admin_auth, pattern='^cancel_admin_auth$'),
                 CommandHandler('cancel', cancel_admin_auth)
-            ]
+            ],
+            per_message=False
         )
 
         # User auth conversation
