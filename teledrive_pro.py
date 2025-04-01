@@ -467,13 +467,19 @@ async def start_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return 'WAITING_FOR_CODE'
 
-async def handle_auth_code(update: Update, context: ContextTypes.DEFAULT_TYPE, code: str):
+async def handle_auth_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Process authorization code"""
     user_id = update.message.from_user.id
+    text = update.message.text.strip()
+    auth_code = extract_auth_code(text)
+    
+    if not auth_code or user_id not in pending_authorizations:
+        await update.message.reply_text("❌ Invalid authorization URL", parse_mode='Markdown')
+        return ConversationHandler.END
     
     try:
         flow = pending_authorizations[user_id]
-        flow.fetch_token(code=code)  # Fixed: Added closing parenthesis
+        flow.fetch_token(code=auth_code)
         creds = flow.credentials
         token_path = get_user_token_path(user_id)
         
@@ -491,13 +497,15 @@ async def handle_auth_code(update: Update, context: ContextTypes.DEFAULT_TYPE, c
             chat_id=user_id,
             text="✅ *Authorization Successful!*",
             parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup(keyboard))
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
     except Exception as e:
         await context.bot.send_message(
             chat_id=user_id,
             text=f"❌ *Authorization Failed*\n\nError: `{str(e)}`",
             parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔑 Try Again", callback_data='start_auth')]]))
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔑 Try Again", callback_data='start_auth')]])
+        )
     
     return ConversationHandler.END
 
@@ -607,7 +615,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     auth_code = extract_auth_code(text)
     if auth_code:
         if user_id in pending_authorizations:
-            return await handle_auth_code(update, context, auth_code)
+            return await handle_auth_code(update, context)
         elif user_id == ADMIN_USER_ID and ADMIN_USER_ID in pending_authorizations:
             return await handle_admin_auth_code(update, context)
     
@@ -651,7 +659,7 @@ async def handle_drive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"❌ *Daily Limit Reached*\n\n{CONTACT_TEXT}",
             parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            reply_markup=InlineKeyboardMarkup(keyboard))
         )
         return
     
@@ -665,7 +673,7 @@ async def handle_drive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "❌ *Authorization Required*",
             parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            reply_markup=InlineKeyboardMarkup(keyboard))
         )
         return
     
