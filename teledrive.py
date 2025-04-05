@@ -12,9 +12,9 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 from google.auth.transport.requests import Request
 from googleapiclient.errors import HttpError
-from google_auth_oauthlib.flow import Flow
+from google_auth_oauthlib.flow import InstalledAppFlow
 
-# Configuration (unchanged from original)
+# Configuration
 BOT_TOKEN = "7846379611:AAGzu4KM-Aq699Q8aHNt29t0YbTnDKbkXbI"
 TOKEN_PATH = 'token.json'
 CREDENTIALS_PATH = 'credentials.json'
@@ -25,7 +25,7 @@ TARGET_CHANNEL = "@techworld196"
 BANNED_FILE_ID = '1B5GAAtzpuH_XNGyUiJIMDlB9hJfxkg8r'
 SCOPES = ['https://www.googleapis.com/auth/drive']
 
-# Constants (unchanged from original)
+# Constants
 MAX_RETRIES = 3
 RETRY_DELAY = 10  # seconds
 CHUNK_SIZE = 20  # Number of files to process at once
@@ -34,9 +34,8 @@ CHUNK_SIZE = 20  # Number of files to process at once
 AUTH_STATE = 1
 pending_authorizations = {}
 
-# ========== NEW AUTHORIZATION FUNCTIONS ==========
 def get_drive_service():
-    """Initialize and return Google Drive service with OAuth flow"""
+    """Initialize and return Google Drive service"""
     creds = None
     if os.path.exists(TOKEN_PATH):
         creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
@@ -53,10 +52,10 @@ def get_drive_service():
 
 async def auth_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start Google Drive authorization process"""
-    flow = Flow.from_client_secrets_file(
+    flow = InstalledAppFlow.from_client_secrets_file(
         CREDENTIALS_PATH,
         scopes=SCOPES,
-        redirect_uri='urn:ietf:wg:oauth:2.0:oob'
+        redirect_uri='http://localhost:8080'
     )
     auth_url, _ = flow.authorization_url(prompt='consent')
     pending_authorizations[update.effective_user.id] = flow
@@ -64,10 +63,10 @@ async def auth_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🔑 *Google Drive Authorization Required*\n\n"
         "1. Click this link to authorize:\n"
-        f"{auth_url}\n\n"
-        "2. After approving, copy the authorization code\n"
-        "3. Send the code back to this chat\n\n"
-        "⚠️ Note: You may see an 'unverified app' warning. Click 'Advanced' then 'Continue'.",
+        f"[Authorize Google Drive]({auth_url})\n\n"
+        "2. After approving, you'll see an error page (This is normal)\n"
+        "3. Send me the complete URL from your browser's address bar\n\n"
+        "⚠️ *Note:* You may see an 'unverified app' warning. Click 'Advanced' then 'Continue'",
         parse_mode='Markdown',
         disable_web_page_preview=True
     )
@@ -76,10 +75,17 @@ async def auth_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_auth_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle received authorization code"""
     user_id = update.effective_user.id
-    code = update.message.text.strip()
+    text = update.message.text.strip()
     
-    if user_id not in pending_authorizations:
-        await update.message.reply_text("❌ No active authorization session. Start with /auth")
+    # Extract code from URL
+    code = None
+    if 'code=' in text:
+        code = text.split('code=')[1].split('&')[0]
+    elif 'localhost' in text and '?code=' in text:
+        code = text.split('?code=')[1].split('&')[0]
+    
+    if not code or user_id not in pending_authorizations:
+        await update.message.reply_text("❌ Invalid authorization URL. Please try /auth again")
         return ConversationHandler.END
     
     try:
@@ -92,7 +98,6 @@ async def handle_auth_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         del pending_authorizations[user_id]
         await update.message.reply_text("✅ Authorization successful! Bot is now ready to use.")
-        
     except Exception as e:
         await update.message.reply_text(f"❌ Authorization failed: {str(e)}")
     
@@ -104,10 +109,9 @@ async def cancel_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in pending_authorizations:
         del pending_authorizations[user_id]
     
-    await update.message.reply_text("❌ Authorization process cancelled.")
+    await update.message.reply_text("❌ Authorization cancelled")
     return ConversationHandler.END
 
-# ========== ORIGINAL FUNCTIONS (COMPLETELY UNCHANGED) ==========
 def initialize_banned_items(service):
     """Load banned items list from Google Drive"""
     try:
@@ -130,11 +134,10 @@ def save_banned_items(service, banned_items):
 def extract_folder_id(url):
     """Extract folder ID from Google Drive URL with multiple pattern support"""
     patterns = [
-        r'/folders/([a-zA-Z0-9-_]+)',        # Standard /folders/ pattern
-        r'[?&]id=([a-zA-Z0-9-_]+)',          # ?id= or &id= pattern
-        r'/folderview[?&]id=([a-zA-Z0-9-_]+)' # /folderview?id= pattern
+        r'/folders/([a-zA-Z0-9-_]+)',
+        r'[?&]id=([a-zA-Z0-9-_]+)',
+        r'/folderview[?&]id=([a-zA-Z0-9-_]+)'
     ]
-    
     for pattern in patterns:
         match = re.search(pattern, url)
         if match:
@@ -170,7 +173,6 @@ def execute_with_retry(func, *args, **kwargs):
                 time.sleep(RETRY_DELAY)
                 continue
             raise
-    
     raise Exception(f"Operation failed after {MAX_RETRIES} attempts. Last error: {str(last_exception)}")
 
 def copy_folder(service, folder_id, banned_items):
@@ -226,7 +228,6 @@ def get_all_subfolders_recursive(service, folder_id):
             except Exception as e:
                 print(f"Error getting subfolders: {str(e)}")
                 break
-    
     return subfolders
 
 def copy_files_only(service, source_id, dest_id, banned_items, overwrite=False):
@@ -358,15 +359,13 @@ def rename_files_and_folders(service, folder_id):
                     current_name = item['name']
                     new_name = current_name
                     
-                    # First check for @[any text] pattern
+                    # Check for @mentions
                     at_pattern = re.compile(r'@\w+')
                     at_match = at_pattern.search(current_name)
                     
                     if at_match:
-                        # Replace any @mention with @TechZoneX
                         new_name = at_pattern.sub('@TechZoneX', current_name)
                     elif item['mimeType'] == 'video/mp4' and current_name.endswith('.mp4'):
-                        # Only add watermark if not an @mention file and is mp4
                         new_name = current_name.replace('.mp4', ' (Telegram@TechZoneX).mp4')
                     
                     if new_name != current_name:
@@ -451,7 +450,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         banned_items = initialize_banned_items(drive_service)
 
         if original_text:
-            # Process Google Drive links with multiple pattern support
             url_matches = list(re.finditer(
                 r'https?://(?:drive\.google\.com/(?:drive/folders/|folderview\?id=|.*[?&]id=)|.*\.google\.com/open\?id=)[\w-]+[^\s>]*',
                 original_text
@@ -474,21 +472,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await message.reply_text(f"⚠️ Error processing {url}: {str(e)}")
                         continue
 
-            # Truncate after last drive link if any
             if drive_links:
                 last_pos = original_text.rfind(drive_links[-1][1]) + len(drive_links[-1][1])
                 final_text = original_text[:last_pos].strip()
             else:
                 final_text = original_text
 
-            # Process entities
             filtered_entities = filter_entities(original_entities)
             valid_entities = validate_entity_positions(final_text, filtered_entities)
         else:
             final_text = ''
             valid_entities = []
 
-        # Prepare message arguments
         send_args = {
             'chat_id': TARGET_CHANNEL,
             'disable_notification': True,
@@ -496,7 +491,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'caption_entities': valid_entities
         }
 
-        # Forward message with appropriate media type
         if message.photo:
             await context.bot.send_photo(
                 photo=message.photo[-1].file_id,
@@ -539,10 +533,6 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         input_text = ' '.join(context.args).strip()
-        if not input_text:
-            await update.message.reply_text("❌ Empty input provided")
-            return
-
         drive_service = get_drive_service()
         banned_items = initialize_banned_items(drive_service)
 
@@ -553,19 +543,11 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         item_name = input_text  # default to original input
         
         if file_id:
-            try:
-                file_info = execute_with_retry(drive_service.files().get, fileId=file_id, fields='name')
-                item_name = file_info['name']
-            except Exception as e:
-                await update.message.reply_text(f"⚠️ Could not fetch file info: {str(e)}")
-                return
+            file_info = execute_with_retry(drive_service.files().get, fileId=file_id, fields='name')
+            item_name = file_info['name']
         elif folder_id:
-            try:
-                folder_info = execute_with_retry(drive_service.files().get, fileId=folder_id, fields='name')
-                item_name = folder_info['name']
-            except Exception as e:
-                await update.message.reply_text(f"⚠️ Could not fetch folder info: {str(e)}")
-                return
+            folder_info = execute_with_retry(drive_service.files().get, fileId=folder_id, fields='name')
+            item_name = folder_info['name']
 
         if item_name not in banned_items:
             banned_items.append(item_name)
@@ -587,33 +569,20 @@ async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         input_text = ' '.join(context.args).strip()
-        if not input_text:
-            await update.message.reply_text("❌ Empty input provided")
-            return
-
         drive_service = get_drive_service()
         banned_items = initialize_banned_items(drive_service)
 
-        # Check if input is a Google Drive link
         file_id = extract_file_id(input_text)
         folder_id = extract_folder_id(input_text)
         
         item_name = input_text  # default to original input
         
         if file_id:
-            try:
-                file_info = execute_with_retry(drive_service.files().get, fileId=file_id, fields='name')
-                item_name = file_info['name']
-            except Exception as e:
-                await update.message.reply_text(f"⚠️ Could not fetch file info: {str(e)}")
-                return
+            file_info = execute_with_retry(drive_service.files().get, fileId=file_id, fields='name')
+            item_name = file_info['name']
         elif folder_id:
-            try:
-                folder_info = execute_with_retry(drive_service.files().get, fileId=folder_id, fields='name')
-                item_name = folder_info['name']
-            except Exception as e:
-                await update.message.reply_text(f"⚠️ Could not fetch folder info: {str(e)}")
-                return
+            folder_info = execute_with_retry(drive_service.files().get, fileId=folder_id, fields='name')
+            item_name = folder_info['name']
 
         if item_name in banned_items:
             banned_items.remove(item_name)
@@ -632,7 +601,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🚀 TechZoneX Auto Forward Bot\n\n"
         "Send any post with Google Drive links for processing!\n"
-        "Admins:\n"
+        "Commands:\n"
         "/auth - Authorize Google Drive\n"
         "/ban <name_or_link> - Block files/folders\n"
         "/unban <name_or_link> - Unblock files/folders"
@@ -684,8 +653,7 @@ def main():
     # Error handler
     application.add_error_handler(error_handler)
     
-    # Start polling
-    print("🤖 Bot is running with enhanced authentication flow...")
+    print("🤖 Bot is running with proper authorization flow...")
     application.run_polling()
 
 if __name__ == "__main__":
