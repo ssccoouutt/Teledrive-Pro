@@ -2,6 +2,7 @@ import os
 import logging
 import re
 import io
+import asyncio
 from collections import defaultdict
 from datetime import datetime, timedelta
 from urllib.parse import urlparse, parse_qs
@@ -23,6 +24,8 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseUpload
+import aiohttp
+from aiohttp import web
 
 # Configuration
 SCOPES = ['https://www.googleapis.com/auth/drive']
@@ -106,6 +109,24 @@ FILE_TYPES = {
     'application/vnd.google-apps.folder': 'Folder'
 }
 
+async def health_check(request):
+    """Simple health check endpoint"""
+    return web.Response(text="OK")
+
+async def web_server():
+    """Start aiohttp web server for health checks"""
+    app = web.Application()
+    app.router.add_get('/health', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 8000)
+    await site.start()
+    logger.info("Web server started on port 8000")
+    
+    # Keep server running indefinitely
+    while True:
+        await asyncio.sleep(3600)
+        
 def initialize_drive_service():
     """Initialize Drive service if admin token exists, but don't fail if not."""
     global drive_service
@@ -1282,17 +1303,10 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     except:
         pass
 
-def main():
-    """Start the bot and configure all handlers"""
-    # Initialize logging
-    logging.basicConfig(
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        level=logging.INFO
-    )
-    logger = logging.getLogger(__name__)
-
+async def main():
+    """Main async function to run both bot and web server"""
     try:
-        # Initialize Google Drive service (won't fail if no admin token)
+        # Initialize Google Drive service
         initialize_drive_service()
 
         # Create the Application
@@ -1360,28 +1374,43 @@ def main():
         # ===== SCHEDULED JOBS =====
         application.job_queue.run_repeating(
             reload_users,
-            interval=300,  # 5 minutes
-            first=10       # First run after 10 seconds
+            interval=300,
+            first=10
         )
 
-        # ===== START THE BOT =====
+        # Start web server in background
+        asyncio.create_task(web_server())
+
+        # Start the bot
         logger.info("Starting bot...")
-        application.run_polling(
-            poll_interval=1,
-            timeout=10,
-            drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES
-        )
+        await application.initialize()
+        await application.start()
+        
+        # Keep the application running
+        while True:
+            await asyncio.sleep(3600)
 
     except Exception as e:
         logger.critical(f"Fatal error in main: {str(e)}", exc_info=True)
     finally:
+        logger.info("Shutting down...")
+        try:
+            await application.stop()
+        except Exception as e:
+            logger.error(f"Error stopping application: {e}")
         logger.info("Bot has stopped")
 
 if __name__ == '__main__':
-    # Entry point when script is run directly
+    # Configure logging
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.INFO
+    )
+    logger = logging.getLogger(__name__)
+
     try:
-        main()
+        # Run the main async function
+        asyncio.run(main())
     except KeyboardInterrupt:
         print("\nBot stopped by user")
     except Exception as e:
