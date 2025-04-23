@@ -113,8 +113,92 @@ async def health_check(request):
     """Simple health check endpoint"""
     return web.Response(text="OK")
 
-async def web_server():
-    """Start aiohttp web server for health checks"""
+async def start_bot_application():
+    """Initialize and return the bot application"""
+    # Initialize Google Drive service
+    initialize_drive_service()
+
+    # Create the Application with a custom JobQueue class
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
+    # ===== HANDLER CONFIGURATION =====
+    # Conversation handler for admin authorization
+    admin_auth_conv = ConversationHandler(
+        entry_points=[CommandHandler('auth', auth_command)],
+        states={
+            'WAITING_FOR_ADMIN_CODE': [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_auth_code)
+            ],
+        },
+        fallbacks=[
+            CallbackQueryHandler(cancel_admin_auth, pattern='^cancel_admin_auth$'),
+            CommandHandler('cancel', cancel_admin_auth)
+        ]
+    )
+
+    # Conversation handler for user authorization flow
+    auth_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(start_auth, pattern='^start_auth$')],
+        states={
+            'WAITING_FOR_CODE': [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+            ],
+        },
+        fallbacks=[
+            CallbackQueryHandler(cancel_auth, pattern='^cancel_auth$'),
+            CommandHandler('cancel', cancel_auth)
+        ],
+        per_message=True
+    )
+
+    # Command handlers
+    command_handlers = [
+        CommandHandler('start', start),
+        CommandHandler('help', help_command),
+        CommandHandler('delete', delete_command),
+        CommandHandler('add', add_user_command),
+        CommandHandler('remove', remove_user_command)
+    ]
+
+    # Add all handlers to application
+    for handler in command_handlers:
+        application.add_handler(handler)
+
+    # Add callback query handler
+    application.add_handler(CallbackQueryHandler(button_handler))
+
+    # Add conversation handlers
+    application.add_handler(admin_auth_conv)
+    application.add_handler(auth_conv)
+
+    # Main message handler
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, 
+        handle_message
+    ))
+
+    # Error handler
+    application.add_error_handler(error_handler)
+
+    # ===== SCHEDULED JOBS =====
+    application.job_queue.run_repeating(
+        reload_users,
+        interval=300,
+        first=10
+    )
+
+    return application
+
+async def run_bot():
+    """Run the Telegram bot"""
+    application = await start_bot_application()
+    await application.initialize()
+    await application.start()
+    logger.info("Bot started successfully")
+    return application
+
+async def run_web_server():
+    """Run the web server for health checks"""
     app = web.Application()
     app.router.add_get('/health', health_check)
     runner = web.AppRunner(app)
@@ -122,11 +206,8 @@ async def web_server():
     site = web.TCPSite(runner, '0.0.0.0', 8000)
     await site.start()
     logger.info("Web server started on port 8000")
-    
-    # Keep server running indefinitely
-    while True:
-        await asyncio.sleep(3600)
-        
+    return runner
+
 def initialize_drive_service():
     """Initialize Drive service if admin token exists, but don't fail if not."""
     global drive_service
@@ -1305,100 +1386,40 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def main():
     """Main async function to run both bot and web server"""
+    bot_task = None
+    web_runner = None
+    
     try:
-        # Initialize Google Drive service
-        initialize_drive_service()
-
-        # Create the Application
-        application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
-        # ===== HANDLER CONFIGURATION =====
-        # Conversation handler for admin authorization
-        admin_auth_conv = ConversationHandler(
-            entry_points=[CommandHandler('auth', auth_command)],
-            states={
-                'WAITING_FOR_ADMIN_CODE': [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_auth_code)
-                ],
-            },
-            fallbacks=[
-                CallbackQueryHandler(cancel_admin_auth, pattern='^cancel_admin_auth$'),
-                CommandHandler('cancel', cancel_admin_auth)
-            ]
-        )
-
-        # Conversation handler for user authorization flow
-        auth_conv = ConversationHandler(
-            entry_points=[CallbackQueryHandler(start_auth, pattern='^start_auth$')],
-            states={
-                'WAITING_FOR_CODE': [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
-                ],
-            },
-            fallbacks=[
-                CallbackQueryHandler(cancel_auth, pattern='^cancel_auth$'),
-                CommandHandler('cancel', cancel_auth)
-            ],
-            per_message=True
-        )
-
-        # Command handlers
-        command_handlers = [
-            CommandHandler('start', start),
-            CommandHandler('help', help_command),
-            CommandHandler('delete', delete_command),
-            CommandHandler('add', add_user_command),
-            CommandHandler('remove', remove_user_command)
-        ]
-
-        # Add all handlers to application
-        for handler in command_handlers:
-            application.add_handler(handler)
-
-        # Add callback query handler
-        application.add_handler(CallbackQueryHandler(button_handler))
-
-        # Add conversation handlers
-        application.add_handler(admin_auth_conv)
-        application.add_handler(auth_conv)
-
-        # Main message handler
-        application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND, 
-            handle_message
-        ))
-
-        # Error handler
-        application.add_error_handler(error_handler)
-
-        # ===== SCHEDULED JOBS =====
-        application.job_queue.run_repeating(
-            reload_users,
-            interval=300,
-            first=10
-        )
-
-        # Start web server in background
-        asyncio.create_task(web_server())
-
-        # Start the bot
-        logger.info("Starting bot...")
-        await application.initialize()
-        await application.start()
+        # Start both bot and web server
+        bot_task = asyncio.create_task(run_bot())
+        web_runner = await run_web_server()
         
         # Keep the application running
         while True:
             await asyncio.sleep(3600)
-
+            
+    except asyncio.CancelledError:
+        logger.info("Shutdown signal received")
     except Exception as e:
         logger.critical(f"Fatal error in main: {str(e)}", exc_info=True)
     finally:
         logger.info("Shutting down...")
-        try:
-            await application.stop()
-        except Exception as e:
-            logger.error(f"Error stopping application: {e}")
-        logger.info("Bot has stopped")
+        
+        # Cleanup tasks
+        tasks = []
+        if bot_task:
+            bot_task.cancel()
+            tasks.append(bot_task)
+        
+        # Wait for tasks to complete
+        if tasks:
+            await asyncio.wait(tasks, timeout=10)
+        
+        # Cleanup web runner
+        if web_runner:
+            await web_runner.cleanup()
+        
+        logger.info("Shutdown complete")
 
 if __name__ == '__main__':
     # Configure logging
