@@ -100,8 +100,6 @@ user_usage = defaultdict(lambda: {'count': 0, 'last_used': None})
 drive_service = None
 PREMIUM_USERS = set()
 BASIC_USERS = set()
-runner = None
-site = None
 
 FILE_TYPES = {
     'application/pdf': 'PDF',
@@ -147,13 +145,13 @@ async def run_webserver():
     app = web.Application()
     app.router.add_get(HEALTH_CHECK_ENDPOINT, health_check)
     
-    global runner, site
     runner = web.AppRunner(app)
     await runner.setup()
     
     site = web.TCPSite(runner, '0.0.0.0', WEB_PORT)
     await site.start()
     logger.info(f"Health check server running on port {WEB_PORT}")
+    return runner, site
 
 def initialize_drive_service():
     """Initialize Drive service if admin token exists"""
@@ -1398,7 +1396,7 @@ async def main():
     initialize_drive_service()
     
     # Start web server
-    await run_webserver()
+    runner, site = await run_webserver()
     
     # Start ping task
     ping_task = asyncio.create_task(self_ping())
@@ -1433,7 +1431,6 @@ async def main():
             await application.shutdown()
             
         # Stop web server
-        global runner, site
         if site:
             await site.stop()
         if runner:
