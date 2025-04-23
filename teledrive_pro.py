@@ -2,6 +2,10 @@ import os
 import logging
 import re
 import io
+import asyncio
+import aiohttp
+import time
+import random
 from collections import defaultdict
 from datetime import datetime, timedelta
 from urllib.parse import urlparse, parse_qs
@@ -23,22 +27,25 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseUpload
+from aiohttp import web
 
 # Configuration
 SCOPES = ['https://www.googleapis.com/auth/drive']
 TELEGRAM_BOT_TOKEN = '7404351306:AAHiqgrn0r1uctvPfB1yNyns5qHcMYqatp4'
 CLIENT_SECRET_FILE = 'credentials.json'
-TOKEN_DIR = os.getenv('VOLUME_PATH', './tokens')  # Railway persistent storage
+TOKEN_DIR = './tokens'  # Local storage for tokens
 PREMIUM_FILE_ID = '1726HMqaHlLgiOpvjIeqkOMCq0zrTwitR'
 ADMIN_USER_ID = 990321391
 WHATSAPP_LINK = "https://wa.me/923247220362"
 ACTIVITY_FILE_ID = '1621J8IK0m98fVgxNqdLSuRYlJydI1PjY'
 REQUIRED_CHANNEL = '@TechZoneX'  # Channel username with @
 
-# Create token directory if not exists
-os.makedirs(TOKEN_DIR, exist_ok=True)
+# Web Server Configuration
+WEB_PORT = 8000
+PING_INTERVAL = 25  # Koyeb needs pings every 25 seconds
+HEALTH_CHECK_ENDPOINT = "/health"
 
-# Updated Plan Limits
+# Plan Limits
 PLAN_LIMITS = {
     'free': {
         'daily': 1,
@@ -93,6 +100,8 @@ user_usage = defaultdict(lambda: {'count': 0, 'last_used': None})
 drive_service = None
 PREMIUM_USERS = set()
 BASIC_USERS = set()
+runner = None
+site = None
 
 FILE_TYPES = {
     'application/pdf': 'PDF',
@@ -105,6 +114,48 @@ FILE_TYPES = {
     'application/zip': 'Archive',
     'application/vnd.google-apps.folder': 'Folder'
 }
+
+# Create token directory if not exists
+os.makedirs(TOKEN_DIR, exist_ok=True)
+
+async def health_check(request):
+    """Health check endpoint for Koyeb"""
+    return web.Response(
+        text=f"🤖 Bot is operational | Last active: {datetime.now()}",
+        headers={"Content-Type": "text/plain"}
+    )
+
+async def self_ping():
+    """Keep-alive mechanism for Koyeb"""
+    while True:
+        try:
+            # Ping our own health check endpoint
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f'http://localhost:{WEB_PORT}{HEALTH_CHECK_ENDPOINT}') as resp:
+                    status = f"Status: {resp.status}" if resp.status != 200 else "Success"
+                    logger.info(f"Keepalive ping {status}")
+                    
+            # Additional activity marker
+            with open('/tmp/last_active.txt', 'w') as f:
+                f.write(str(datetime.now()))
+                
+        except Exception as e:
+            logger.error(f"Keepalive error: {str(e)}")
+        
+        await asyncio.sleep(PING_INTERVAL)
+
+async def run_webserver():
+    """Run the web server for health checks"""
+    app = web.Application()
+    app.router.add_get(HEALTH_CHECK_ENDPOINT, health_check)
+    
+    global runner, site
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    site = web.TCPSite(runner, '0.0.0.0', WEB_PORT)
+    await site.start()
+    logger.info(f"Health check server running on port {WEB_PORT}")
 
 def initialize_drive_service():
     """Initialize Drive service if admin token exists, but don't fail if not."""
@@ -1282,108 +1333,137 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     except:
         pass
 
-def main():
-    """Start the bot and configure all handlers"""
-    # Initialize logging
-    logging.basicConfig(
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        level=logging.INFO
-    )
-    logger = logging.getLogger(__name__)
-
-    try:
-        # Initialize Google Drive service (won't fail if no admin token)
-        initialize_drive_service()
-
-        # Create the Application
-        application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
-        # ===== HANDLER CONFIGURATION =====
-        # Conversation handler for admin authorization
-        admin_auth_conv = ConversationHandler(
-            entry_points=[CommandHandler('auth', auth_command)],
-            states={
-                'WAITING_FOR_ADMIN_CODE': [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_auth_code)
-                ],
-            },
-            fallbacks=[
-                CallbackQueryHandler(cancel_admin_auth, pattern='^cancel_admin_auth$'),
-                CommandHandler('cancel', cancel_admin_auth)
-            ]
-        )
-
-        # Conversation handler for user authorization flow
-        auth_conv = ConversationHandler(
-            entry_points=[CallbackQueryHandler(start_auth, pattern='^start_auth$')],
-            states={
-                'WAITING_FOR_CODE': [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
-                ],
-            },
-            fallbacks=[
-                CallbackQueryHandler(cancel_auth, pattern='^cancel_auth$'),
-                CommandHandler('cancel', cancel_auth)
+async def run_bot():
+    """Run the Telegram bot with proper initialization"""
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    
+    # Conversation handler for admin authorization
+    admin_auth_conv = ConversationHandler(
+        entry_points=[CommandHandler('auth', auth_command)],
+        states={
+            'WAITING_FOR_ADMIN_CODE': [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_auth_code)
             ],
-            per_message=True
-        )
-
-        # Command handlers
-        command_handlers = [
-            CommandHandler('start', start),
-            CommandHandler('help', help_command),
-            CommandHandler('delete', delete_command),
-            CommandHandler('add', add_user_command),
-            CommandHandler('remove', remove_user_command)
+        },
+        fallbacks=[
+            CallbackQueryHandler(cancel_admin_auth, pattern='^cancel_admin_auth$'),
+            CommandHandler('cancel', cancel_admin_auth)
         ]
+    )
 
-        # Add all handlers to application
-        for handler in command_handlers:
-            application.add_handler(handler)
+    # Conversation handler for user authorization flow
+    auth_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(start_auth, pattern='^start_auth$')],
+        states={
+            'WAITING_FOR_CODE': [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+            ],
+        },
+        fallbacks=[
+            CallbackQueryHandler(cancel_auth, pattern='^cancel_auth$'),
+            CommandHandler('cancel', cancel_auth)
+        ],
+        per_message=True
+    )
 
-        # Add callback query handler
-        application.add_handler(CallbackQueryHandler(button_handler))
+    # Command handlers
+    command_handlers = [
+        CommandHandler('start', start),
+        CommandHandler('help', help_command),
+        CommandHandler('delete', delete_command),
+        CommandHandler('add', add_user_command),
+        CommandHandler('remove', remove_user_command)
+    ]
 
-        # Add conversation handlers
-        application.add_handler(admin_auth_conv)
-        application.add_handler(auth_conv)
+    # Add all handlers to application
+    for handler in command_handlers:
+        application.add_handler(handler)
 
-        # Main message handler
-        application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND, 
-            handle_message
-        ))
+    # Add callback query handler
+    application.add_handler(CallbackQueryHandler(button_handler))
 
-        # Error handler
-        application.add_error_handler(error_handler)
+    # Add conversation handlers
+    application.add_handler(admin_auth_conv)
+    application.add_handler(auth_conv)
 
-        # ===== SCHEDULED JOBS =====
-        application.job_queue.run_repeating(
-            reload_users,
-            interval=300,  # 5 minutes
-            first=10       # First run after 10 seconds
-        )
+    # Main message handler
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, 
+        handle_message
+    ))
 
-        # ===== START THE BOT =====
-        logger.info("Starting bot...")
-        application.run_polling(
-            poll_interval=1,
-            timeout=10,
-            drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES
-        )
+    # Error handler
+    application.add_error_handler(error_handler)
 
+    # Scheduled jobs
+    application.job_queue.run_repeating(
+        reload_users,
+        interval=300,  # 5 minutes
+        first=10       # First run after 10 seconds
+    )
+
+    logger.info("Starting bot components...")
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+    
+    # Keep the bot running
+    while True:
+        await asyncio.sleep(3600)
+
+async def main():
+    """Main entry point with web server and bot"""
+    # Initialize Google Drive service
+    initialize_drive_service()
+    
+    # Start all components
+    webserver_task = asyncio.create_task(run_webserver())
+    ping_task = asyncio.create_task(self_ping())
+    bot_task = asyncio.create_task(run_bot())
+    
+    try:
+        await asyncio.gather(webserver_task, ping_task, bot_task)
+    except asyncio.CancelledError:
+        logger.info("Shutting down gracefully...")
     except Exception as e:
-        logger.critical(f"Fatal error in main: {str(e)}", exc_info=True)
+        logger.error(f"Fatal error: {str(e)}")
     finally:
-        logger.info("Bot has stopped")
+        # Cleanup tasks
+        logger.info("Starting cleanup process...")
+        
+        # Stop ping task
+        ping_task.cancel()
+        try:
+            await ping_task
+        except asyncio.CancelledError:
+            pass
+            
+        # Stop web server
+        global runner, site
+        if site:
+            await site.stop()
+        if runner:
+            await runner.cleanup()
+            
+        # Stop bot
+        application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+        await application.stop()
+        await application.shutdown()
+        
+        logger.info("Cleanup completed")
 
 if __name__ == '__main__':
-    # Entry point when script is run directly
+    # Create new event loop for Koyeb compatibility
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
     try:
-        main()
+        logger.info("Starting service...")
+        loop.run_until_complete(main())
     except KeyboardInterrupt:
-        print("\nBot stopped by user")
+        logger.info("Service stopped by user")
     except Exception as e:
-        logging.critical(f"Unhandled exception: {str(e)}", exc_info=True)
-        raise
+        logger.error(f"Critical failure: {str(e)}")
+    finally:
+        loop.close()
+        logger.info("Event loop closed")
