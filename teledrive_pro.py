@@ -33,35 +33,35 @@ from aiohttp import web
 SCOPES = ['https://www.googleapis.com/auth/drive']
 TELEGRAM_BOT_TOKEN = '7404351306:AAHiqgrn0r1uctvPfB1yNyns5qHcMYqatp4'
 CLIENT_SECRET_FILE = 'credentials.json'
-TOKEN_DIR = './tokens'  # Local storage for tokens
+TOKEN_DIR = './tokens'
 PREMIUM_FILE_ID = '1726HMqaHlLgiOpvjIeqkOMCq0zrTwitR'
 ADMIN_USER_ID = 990321391
 WHATSAPP_LINK = "https://wa.me/923247220362"
 ACTIVITY_FILE_ID = '1621J8IK0m98fVgxNqdLSuRYlJydI1PjY'
-REQUIRED_CHANNEL = '@TechZoneX'  # Channel username with @
+REQUIRED_CHANNEL = '@TechZoneX'
 
 # Web Server Configuration
 WEB_PORT = 8000
-PING_INTERVAL = 25  # Koyeb needs pings every 25 seconds
+PING_INTERVAL = 25
 HEALTH_CHECK_ENDPOINT = "/health"
 
 # Plan Limits
 PLAN_LIMITS = {
     'free': {
         'daily': 1,
-        'size': 2 * 1024**3,  # 2GB
+        'size': 2 * 1024**3,
         'files': 20,
         'duration': 'per day'
     },
     'basic': {
         'daily': 10,
-        'size': 20 * 1024**3,  # 20GB
+        'size': 20 * 1024**3,
         'files': 150,
         'duration': '1 week'
     },
     'premium': {
         'daily': 30,
-        'size': 100 * 1024**3,  # 100GB
+        'size': 100 * 1024**3,
         'files': 500,
         'duration': '1 week'
     }
@@ -129,13 +129,11 @@ async def self_ping():
     """Keep-alive mechanism for Koyeb"""
     while True:
         try:
-            # Ping our own health check endpoint
             async with aiohttp.ClientSession() as session:
                 async with session.get(f'http://localhost:{WEB_PORT}{HEALTH_CHECK_ENDPOINT}') as resp:
                     status = f"Status: {resp.status}" if resp.status != 200 else "Success"
                     logger.info(f"Keepalive ping {status}")
                     
-            # Additional activity marker
             with open('/tmp/last_active.txt', 'w') as f:
                 f.write(str(datetime.now()))
                 
@@ -158,7 +156,7 @@ async def run_webserver():
     logger.info(f"Health check server running on port {WEB_PORT}")
 
 def initialize_drive_service():
-    """Initialize Drive service if admin token exists, but don't fail if not."""
+    """Initialize Drive service if admin token exists"""
     global drive_service
     creds = None
     token_path = os.path.join(TOKEN_DIR, 'token.json')
@@ -187,7 +185,7 @@ async def check_channel_membership(update: Update, context: ContextTypes.DEFAULT
     """Check if user is member of required channel."""
     try:
         user = update.effective_user
-        if user.id == ADMIN_USER_ID:  # Skip check for admin
+        if user.id == ADMIN_USER_ID:
             return True
             
         member = await context.bot.get_chat_member(REQUIRED_CHANNEL, user.id)
@@ -208,7 +206,7 @@ async def check_channel_membership(update: Update, context: ContextTypes.DEFAULT
         return True
     except Exception as e:
         logger.error(f"Error checking channel membership: {e}")
-        return True  # Allow access if check fails
+        return True
 
 def load_subscribed_users():
     """Load users from Google Drive file."""
@@ -251,11 +249,8 @@ def save_subscribed_users():
         return False
     
     content = []
-    # Premium users
     content.extend(str(uid) for uid in PREMIUM_USERS)
-    # Separator
     content.append('')
-    # Basic users
     content.extend(str(uid) for uid in BASIC_USERS)
     
     media = MediaIoBaseUpload(
@@ -283,13 +278,11 @@ def save_activity_log(user_id: int, username: str, first_name: str, link: str):
     entry = f"{timestamp} | User ID: {user_id} | Username: @{username} | Name: {first_name} | Link: {link}\n"
     
     try:
-        # Get existing content
         request = drive_service.files().get_media(fileId=ACTIVITY_FILE_ID)
         existing_content = request.execute().decode('utf-8')
     except:
         existing_content = ""
     
-    # Add new entry at the top
     new_content = entry + existing_content
     
     media = MediaIoBaseUpload(
@@ -311,7 +304,6 @@ async def auth_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /auth command for admin Google Drive authorization."""
     user = update.effective_user
     
-    # Check admin privileges
     if user.id != ADMIN_USER_ID:
         await update.message.reply_text(
             "❌ *Permission Denied*\nThis command is for admins only.",
@@ -319,7 +311,6 @@ async def auth_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Check if already authorized
     token_path = os.path.join(TOKEN_DIR, 'token.json')
     if os.path.exists(token_path):
         creds = Credentials.from_authorized_user_file(token_path, SCOPES)
@@ -331,7 +322,6 @@ async def auth_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
     
-    # Start authorization flow
     flow = Flow.from_client_secrets_file(
         CLIENT_SECRET_FILE,
         scopes=SCOPES,
@@ -381,7 +371,7 @@ async def handle_admin_auth_code(update: Update, context: ContextTypes.DEFAULT_T
         
         global drive_service
         drive_service = build('drive', 'v3', credentials=creds)
-        load_subscribed_users()  # Reload users after auth
+        load_subscribed_users()
         
         await update.message.reply_text(
             "✅ *Admin Authorization Successful!*\n\n"
@@ -737,7 +727,6 @@ async def handle_auth_code(update: Update, context: ContextTypes.DEFAULT_TYPE, c
     user_id = update.message.from_user.id
     
     try:
-        # Delete the original auth message if possible
         try:
             if user_id in pending_authorizations:
                 flow = pending_authorizations[user_id]
@@ -980,7 +969,6 @@ async def update_progress(context: ContextTypes.DEFAULT_TYPE, user_id: int, mess
         if not chat_id or not message_id:
             return
             
-        # Try to edit the existing message
         try:
             await context.bot.edit_message_text(
                 chat_id=chat_id,
@@ -989,7 +977,6 @@ async def update_progress(context: ContextTypes.DEFAULT_TYPE, user_id: int, mess
                 parse_mode='Markdown'
             )
         except Exception as e:
-            # If editing fails (message not found), try to send a new one
             logger.warning(f"Failed to edit progress message: {e}")
             msg = await context.bot.send_message(
                 chat_id=chat_id,
@@ -1033,7 +1020,6 @@ async def copy_folder_process(context: ContextTypes.DEFAULT_TYPE, user_id: int, 
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        # Send completion as a new message
         await context.bot.send_message(
             chat_id=chat_id,
             text=success_msg,
@@ -1042,7 +1028,6 @@ async def copy_folder_process(context: ContextTypes.DEFAULT_TYPE, user_id: int, 
         )
         
     except Exception as e:
-        # On error, send as new message to ensure user sees it
         await context.bot.send_message(
             chat_id=chat_id,
             text=f"❌ *Error*\n\n`{str(e)}`",
@@ -1053,7 +1038,6 @@ async def copy_folder_process(context: ContextTypes.DEFAULT_TYPE, user_id: int, 
         )
     finally:
         if user_id in progress_data:
-            # Try to delete the progress message if it exists
             try:
                 if progress_data[user_id]['message_id'] is not None:
                     await context.bot.delete_message(
@@ -1213,7 +1197,6 @@ async def add_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /add command (admin only)."""
     user = update.message.from_user
     
-    # Check admin privileges
     if user.id != ADMIN_USER_ID:
         await update.message.reply_text(
             "❌ *Permission Denied*\nThis command is for admins only.",
@@ -1241,7 +1224,6 @@ async def add_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Update user lists
     global PREMIUM_USERS, BASIC_USERS
     if tier == 'premium':
         BASIC_USERS.discard(user_id)
@@ -1250,7 +1232,6 @@ async def add_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         PREMIUM_USERS.discard(user_id)
         BASIC_USERS.add(user_id)
     
-    # Save to Drive
     if save_subscribed_users():
         await update.message.reply_text(
             f"✅ *User {user_id} added to {tier} tier*",
@@ -1266,7 +1247,6 @@ async def remove_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Handle /remove command (admin only)."""
     user = update.message.from_user
     
-    # Check admin privileges
     if user.id != ADMIN_USER_ID:
         await update.message.reply_text(
             "❌ *Permission Denied*\nThis command is for admins only.",
@@ -1297,7 +1277,6 @@ async def remove_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             BASIC_USERS.discard(user_id)
             success_msg = f"✅ *Removed user {user_id} from subscription lists*"
 
-        # Save to Drive
         if save_subscribed_users():
             await update.message.reply_text(success_msg, parse_mode='Markdown')
         else:
@@ -1321,9 +1300,9 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     
     if isinstance(context.error, telegram.error.BadRequest):
         if "Message to edit not found" in str(context.error):
-            return  # Ignore this specific error
+            return
         elif "Message is not modified" in str(context.error):
-            return  # Ignore this specific error
+            return
     
     try:
         await context.bot.send_message(
@@ -1333,8 +1312,8 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     except:
         pass
 
-async def run_bot():
-    """Run the Telegram bot with proper initialization"""
+async def setup_bot_application():
+    """Setup and return the configured bot application"""
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
     # Conversation handler for admin authorization
@@ -1398,31 +1377,41 @@ async def run_bot():
     # Scheduled jobs
     application.job_queue.run_repeating(
         reload_users,
-        interval=300,  # 5 minutes
-        first=10       # First run after 10 seconds
+        interval=300,
+        first=10
     )
 
+    return application
+
+async def run_bot():
+    """Run the Telegram bot application"""
+    application = await setup_bot_application()
     logger.info("Starting bot components...")
     await application.initialize()
     await application.start()
     await application.updater.start_polling()
-    
-    # Keep the bot running
-    while True:
-        await asyncio.sleep(3600)
+    return application
 
 async def main():
     """Main entry point with web server and bot"""
     # Initialize Google Drive service
     initialize_drive_service()
     
-    # Start all components
-    webserver_task = asyncio.create_task(run_webserver())
-    ping_task = asyncio.create_task(self_ping())
-    bot_task = asyncio.create_task(run_bot())
+    # Start web server
+    await run_webserver()
     
+    # Start ping task
+    ping_task = asyncio.create_task(self_ping())
+    
+    # Start bot application
+    application = None
     try:
-        await asyncio.gather(webserver_task, ping_task, bot_task)
+        application = await run_bot()
+        
+        # Keep the application running
+        while True:
+            await asyncio.sleep(3600)
+            
     except asyncio.CancelledError:
         logger.info("Shutting down gracefully...")
     except Exception as e:
@@ -1438,22 +1427,29 @@ async def main():
         except asyncio.CancelledError:
             pass
             
+        # Stop bot application if it was created
+        if application:
+            await application.stop()
+            await application.shutdown()
+            
         # Stop web server
         global runner, site
         if site:
             await site.stop()
         if runner:
             await runner.cleanup()
-            
-        # Stop bot
-        application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-        await application.stop()
-        await application.shutdown()
         
         logger.info("Cleanup completed")
 
 if __name__ == '__main__':
-    # Create new event loop for Koyeb compatibility
+    # Configure logging
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.INFO
+    )
+    logger = logging.getLogger(__name__)
+    
+    # Create and run event loop
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
