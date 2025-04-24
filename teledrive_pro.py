@@ -34,35 +34,35 @@ from aiohttp import web
 SCOPES = ['https://www.googleapis.com/auth/drive']
 TELEGRAM_BOT_TOKEN = '7404351306:AAHiqgrn0r1uctvPfB1yNyns5qHcMYqatp4'
 CLIENT_SECRET_FILE = 'credentials.json'
-TOKEN_DIR = './tokens'  # Local storage for tokens
+TOKEN_DIR = './tokens'
 PREMIUM_FILE_ID = '1726HMqaHlLgiOpvjIeqkOMCq0zrTwitR'
 ADMIN_USER_ID = 990321391
 WHATSAPP_LINK = "https://wa.me/923247220362"
 ACTIVITY_FILE_ID = '1621J8IK0m98fVgxNqdLSuRYlJydI1PjY'
-REQUIRED_CHANNEL = '@TechZoneX'  # Channel username with @
+REQUIRED_CHANNEL = '@TechZoneX'
 
 # Web Server Configuration
 WEB_PORT = 8000
-PING_INTERVAL = 25  # Koyeb needs pings every 25 seconds
+PING_INTERVAL = 25
 HEALTH_CHECK_ENDPOINT = "/health"
 
 # Plan Limits
 PLAN_LIMITS = {
     'free': {
         'daily': 1,
-        'size': 2 * 1024**3,  # 2GB
+        'size': 2 * 1024**3,
         'files': 20,
         'duration': 'per day'
     },
     'basic': {
         'daily': 10,
-        'size': 20 * 1024**3,  # 20GB
+        'size': 20 * 1024**3,
         'files': 150,
         'duration': '1 week'
     },
     'premium': {
         'daily': 30,
-        'size': 100 * 1024**3,  # 100GB
+        'size': 100 * 1024**3,
         'files': 500,
         'duration': '1 week'
     }
@@ -127,26 +127,22 @@ async def health_check(request):
         status=200
     )
 
-async def readiness_check(request):
-    """Readiness check endpoint"""
-    status = {
-        'drive_service': bool(drive_service),
-        'last_ping': datetime.now().isoformat(),
-        'status': 'ready' if drive_service else 'degraded'
-    }
-    return web.json_response(status)
+async def root_handler(request):
+    """Root endpoint handler for Koyeb health checks"""
+    return web.Response(
+        text="Bot is running",
+        status=200
+    )
 
 async def self_ping():
     """Keep-alive mechanism for Koyeb"""
     while True:
         try:
-            # Ping our own health check endpoint
             async with aiohttp.ClientSession() as session:
                 async with session.get(f'http://localhost:{WEB_PORT}{HEALTH_CHECK_ENDPOINT}') as resp:
                     status = f"Status: {resp.status}" if resp.status != 200 else "Success"
                     logger.info(f"Keepalive ping {status}")
                     
-            # Additional activity marker
             with open('/tmp/last_active.txt', 'w') as f:
                 f.write(str(datetime.now()))
                 
@@ -159,8 +155,7 @@ async def run_webserver():
     """Run the web server for health checks"""
     app = web.Application()
     app.router.add_get(HEALTH_CHECK_ENDPOINT, health_check)
-    app.router.add_get("/", health_check)  # Root endpoint for Koyeb
-    app.router.add_get("/ready", readiness_check)  # Readiness endpoint
+    app.router.add_get("/", root_handler)
     
     global runner, site
     runner = web.AppRunner(app)
@@ -174,7 +169,7 @@ def initialize_drive_service():
     """Initialize Drive service with retries"""
     global drive_service
     max_retries = 3
-    retry_delay = 5  # seconds
+    retry_delay = 5
     
     for attempt in range(max_retries):
         try:
@@ -244,11 +239,8 @@ def save_subscribed_users():
         return False
     
     content = []
-    # Premium users
     content.extend(str(uid) for uid in PREMIUM_USERS)
-    # Separator
     content.append('')
-    # Basic users
     content.extend(str(uid) for uid in BASIC_USERS)
     
     media = MediaIoBaseUpload(
@@ -276,13 +268,11 @@ def save_activity_log(user_id: int, username: str, first_name: str, link: str):
     entry = f"{timestamp} | User ID: {user_id} | Username: @{username} | Name: {first_name} | Link: {link}\n"
     
     try:
-        # Get existing content
         request = drive_service.files().get_media(fileId=ACTIVITY_FILE_ID)
         existing_content = request.execute().decode('utf-8')
     except:
         existing_content = ""
     
-    # Add new entry at the top
     new_content = entry + existing_content
     
     media = MediaIoBaseUpload(
@@ -304,7 +294,6 @@ async def auth_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /auth command for admin Google Drive authorization."""
     user = update.effective_user
     
-    # Check admin privileges
     if user.id != ADMIN_USER_ID:
         await update.message.reply_text(
             "❌ *Permission Denied*\nThis command is for admins only.",
@@ -312,7 +301,6 @@ async def auth_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Check if already authorized
     token_path = os.path.join(TOKEN_DIR, 'token.json')
     if os.path.exists(token_path):
         creds = Credentials.from_authorized_user_file(token_path, SCOPES)
@@ -324,7 +312,6 @@ async def auth_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
     
-    # Start authorization flow
     flow = Flow.from_client_secrets_file(
         CLIENT_SECRET_FILE,
         scopes=SCOPES,
@@ -374,7 +361,7 @@ async def handle_admin_auth_code(update: Update, context: ContextTypes.DEFAULT_T
         
         global drive_service
         drive_service = build('drive', 'v3', credentials=creds)
-        load_subscribed_users()  # Reload users after auth
+        load_subscribed_users()
         
         await update.message.reply_text(
             "✅ *Admin Authorization Successful!*\n\n"
@@ -730,7 +717,6 @@ async def handle_auth_code(update: Update, context: ContextTypes.DEFAULT_TYPE, c
     user_id = update.message.from_user.id
     
     try:
-        # Delete the original auth message if possible
         try:
             if user_id in pending_authorizations:
                 flow = pending_authorizations[user_id]
@@ -809,7 +795,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     text = update.message.text.strip()
     
-    # Check if this is a localhost redirect URL with auth code
     auth_code = extract_auth_code(text)
     if auth_code:
         if user_id in pending_authorizations:
@@ -817,11 +802,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif user_id == ADMIN_USER_ID and ADMIN_USER_ID in pending_authorizations:
             return await handle_admin_auth_code(update, context)
     
-    # Check if this is a Google Drive link
     if 'drive.google.com' in text:
         return await handle_drive_link(update, context)
     
-    # Default response
     keyboard = [
         [InlineKeyboardButton("🔑 Connect Google Drive", callback_data='start_auth')],
         [InlineKeyboardButton("📊 View Plans", callback_data='show_plans')]
@@ -843,13 +826,11 @@ async def handle_drive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = user.id
     user_tier = is_subscribed_user(user_id)
     
-    # Save activity log for non-admin users
     if user_id != ADMIN_USER_ID and drive_service:
         username = user.username or "no_username"
         first_name = user.first_name or "No Name"
         save_activity_log(user_id, username, first_name, update.message.text)
     
-    # Check daily usage
     today = datetime.now().date()
     if user_usage[user_id]['last_used'] != today:
         user_usage[user_id] = {'count': 0, 'last_used': today}
@@ -893,10 +874,8 @@ async def handle_drive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         service = build('drive', 'v3', credentials=creds)
         progress_msg = await update.message.reply_text("⏳ *Analyzing folder...*", parse_mode='Markdown')
         
-        # Count files and size
         total_files, total_size = count_files_and_size(service, folder_id)
         
-        # Check limits
         if total_size > PLAN_LIMITS[user_tier]['size']:
             keyboard = [
                 [InlineKeyboardButton("📊 View Plans", callback_data='show_plans')],
@@ -929,10 +908,8 @@ async def handle_drive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        # Update usage
         user_usage[user_id]['count'] += 1
         
-        # Start copying
         progress_data[user_id] = {
             'total_files': total_files,
             'processed_files': 0,
@@ -973,7 +950,6 @@ async def update_progress(context: ContextTypes.DEFAULT_TYPE, user_id: int, mess
         if not chat_id or not message_id:
             return
             
-        # Try to edit the existing message
         try:
             await context.bot.edit_message_text(
                 chat_id=chat_id,
@@ -982,7 +958,6 @@ async def update_progress(context: ContextTypes.DEFAULT_TYPE, user_id: int, mess
                 parse_mode='Markdown'
             )
         except Exception as e:
-            # If editing fails (message not found), try to send a new one
             logger.warning(f"Failed to edit progress message: {e}")
             msg = await context.bot.send_message(
                 chat_id=chat_id,
@@ -1026,7 +1001,6 @@ async def copy_folder_process(context: ContextTypes.DEFAULT_TYPE, user_id: int, 
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        # Send completion as a new message
         await context.bot.send_message(
             chat_id=chat_id,
             text=success_msg,
@@ -1035,7 +1009,6 @@ async def copy_folder_process(context: ContextTypes.DEFAULT_TYPE, user_id: int, 
         )
         
     except Exception as e:
-        # On error, send as new message to ensure user sees it
         await context.bot.send_message(
             chat_id=chat_id,
             text=f"❌ *Error*\n\n`{str(e)}`",
@@ -1046,7 +1019,6 @@ async def copy_folder_process(context: ContextTypes.DEFAULT_TYPE, user_id: int, 
         )
     finally:
         if user_id in progress_data:
-            # Try to delete the progress message if it exists
             try:
                 if progress_data[user_id]['message_id'] is not None:
                     await context.bot.delete_message(
@@ -1206,7 +1178,6 @@ async def add_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /add command (admin only)."""
     user = update.message.from_user
     
-    # Check admin privileges
     if user.id != ADMIN_USER_ID:
         await update.message.reply_text(
             "❌ *Permission Denied*\nThis command is for admins only.",
@@ -1234,7 +1205,6 @@ async def add_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Update user lists
     global PREMIUM_USERS, BASIC_USERS
     if tier == 'premium':
         BASIC_USERS.discard(user_id)
@@ -1243,7 +1213,6 @@ async def add_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         PREMIUM_USERS.discard(user_id)
         BASIC_USERS.add(user_id)
     
-    # Save to Drive
     if save_subscribed_users():
         await update.message.reply_text(
             f"✅ *User {user_id} added to {tier} tier*",
@@ -1259,7 +1228,6 @@ async def remove_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Handle /remove command (admin only)."""
     user = update.message.from_user
     
-    # Check admin privileges
     if user.id != ADMIN_USER_ID:
         await update.message.reply_text(
             "❌ *Permission Denied*\nThis command is for admins only.",
@@ -1290,7 +1258,6 @@ async def remove_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             BASIC_USERS.discard(user_id)
             success_msg = f"✅ *Removed user {user_id} from subscription lists*"
 
-        # Save to Drive
         if save_subscribed_users():
             await update.message.reply_text(success_msg, parse_mode='Markdown')
         else:
@@ -1314,9 +1281,9 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     
     if isinstance(context.error, telegram.error.BadRequest):
         if "Message to edit not found" in str(context.error):
-            return  # Ignore this specific error
+            return
         elif "Message is not modified" in str(context.error):
-            return  # Ignore this specific error
+            return
     
     try:
         await context.bot.send_message(
@@ -1325,6 +1292,33 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
     except:
         pass
+
+async def check_channel_membership(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Check if user is member of required channel."""
+    try:
+        user = update.effective_user
+        if user.id == ADMIN_USER_ID:
+            return True
+            
+        member = await context.bot.get_chat_member(REQUIRED_CHANNEL, user.id)
+        if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED]:
+            keyboard = [
+                [InlineKeyboardButton("Join Channel", url=f"https://t.me/{REQUIRED_CHANNEL[1:]}")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await context.bot.send_message(
+                chat_id=user.id,
+                text="⚠️ *Please join our channel first*\n\n"
+                     f"You need to join {REQUIRED_CHANNEL} to use this bot.",
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"Error checking channel membership: {e}")
+        return True
 
 async def shutdown(signal, loop):
     """Cleanup tasks tied to the service's shutdown."""
@@ -1361,14 +1355,13 @@ async def run_bot():
         entry_points=[CallbackQueryHandler(start_auth, pattern='^start_auth$')],
         states={
             'WAITING_FOR_CODE': [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_auth_code)
             ],
         },
         fallbacks=[
-            CallbackQueryHandler(cancel_auth, pattern='^cancel_auth$'),
-            CommandHandler('cancel', cancel_auth)
+            CallbackQueryHandler(cancel_auth, pattern='^cancel_auth$')
         ],
-        per_message=True
+        per_message=False
     )
 
     # Command handlers
@@ -1384,27 +1377,21 @@ async def run_bot():
     for handler in command_handlers:
         application.add_handler(handler)
 
-    # Add callback query handler
     application.add_handler(CallbackQueryHandler(button_handler))
-
-    # Add conversation handlers
     application.add_handler(admin_auth_conv)
     application.add_handler(auth_conv)
 
-    # Main message handler
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND, 
         handle_message
     ))
 
-    # Error handler
     application.add_error_handler(error_handler)
 
-    # Scheduled jobs
     application.job_queue.run_repeating(
         reload_users,
-        interval=300,  # 5 minutes
-        first=10       # First run after 10 seconds
+        interval=300,
+        first=10
     )
 
     logger.info("Starting bot components...")
@@ -1412,16 +1399,13 @@ async def run_bot():
     await application.start()
     await application.updater.start_polling()
     
-    # Keep the bot running
     while True:
         await asyncio.sleep(3600)
 
 async def main():
     """Main entry point with web server and bot"""
-    # Initialize Google Drive service
     initialize_drive_service()
     
-    # Start all components
     webserver_task = asyncio.create_task(run_webserver())
     ping_task = asyncio.create_task(self_ping())
     bot_task = asyncio.create_task(run_bot())
@@ -1433,24 +1417,20 @@ async def main():
     except Exception as e:
         logger.error(f"Fatal error: {str(e)}")
     finally:
-        # Cleanup tasks
         logger.info("Starting cleanup process...")
         
-        # Stop ping task
         ping_task.cancel()
         try:
             await ping_task
         except asyncio.CancelledError:
             pass
             
-        # Stop web server
         global runner, site
         if site:
             await site.stop()
         if runner:
             await runner.cleanup()
             
-        # Stop bot
         application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
         await application.stop()
         await application.shutdown()
@@ -1458,15 +1438,14 @@ async def main():
         logger.info("Cleanup completed")
 
 if __name__ == '__main__':
-    # Create new event loop for Koyeb compatibility
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
-    # Register signal handlers
     signals = (signal.SIGHUP, signal.SIGTERM, signal.SIGINT)
     for s in signals:
         loop.add_signal_handler(
             s, lambda s=s: asyncio.create_task(shutdown(s, loop))
+        )
     
     try:
         logger.info("Starting service...")
