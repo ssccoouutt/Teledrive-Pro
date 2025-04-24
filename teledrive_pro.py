@@ -6,6 +6,7 @@ import asyncio
 import aiohttp
 import time
 import random
+import signal
 from collections import defaultdict
 from datetime import datetime, timedelta
 from urllib.parse import urlparse, parse_qs
@@ -122,8 +123,18 @@ async def health_check(request):
     """Health check endpoint for Koyeb"""
     return web.Response(
         text=f"🤖 Bot is operational | Last active: {datetime.now()}",
-        headers={"Content-Type": "text/plain"}
+        headers={"Content-Type": "text/plain"},
+        status=200
     )
+
+async def readiness_check(request):
+    """Readiness check endpoint"""
+    status = {
+        'drive_service': bool(drive_service),
+        'last_ping': datetime.now().isoformat(),
+        'status': 'ready' if drive_service else 'degraded'
+    }
+    return web.json_response(status)
 
 async def self_ping():
     """Keep-alive mechanism for Koyeb"""
@@ -148,6 +159,8 @@ async def run_webserver():
     """Run the web server for health checks"""
     app = web.Application()
     app.router.add_get(HEALTH_CHECK_ENDPOINT, health_check)
+    app.router.add_get("/", health_check)  # Root endpoint for Koyeb
+    app.router.add_get("/ready", readiness_check)  # Readiness endpoint
     
     global runner, site
     runner = web.AppRunner(app)
@@ -158,57 +171,37 @@ async def run_webserver():
     logger.info(f"Health check server running on port {WEB_PORT}")
 
 def initialize_drive_service():
-    """Initialize Drive service if admin token exists, but don't fail if not."""
+    """Initialize Drive service with retries"""
     global drive_service
-    creds = None
-    token_path = os.path.join(TOKEN_DIR, 'token.json')
+    max_retries = 3
+    retry_delay = 5  # seconds
     
-    if os.path.exists(token_path):
+    for attempt in range(max_retries):
         try:
-            creds = Credentials.from_authorized_user_file(token_path, SCOPES)
-            
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-                with open(token_path, 'w') as token:
-                    token.write(creds.to_json())
-            
-            if creds and creds.valid:
-                drive_service = build('drive', 'v3', credentials=creds)
-                load_subscribed_users()
-                logger.info("Admin Drive service initialized successfully")
+            token_path = os.path.join(TOKEN_DIR, 'token.json')
+            if os.path.exists(token_path):
+                creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+                
+                if creds and creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                    with open(token_path, 'w') as token:
+                        token.write(creds.to_json())
+                
+                if creds and creds.valid:
+                    drive_service = build('drive', 'v3', credentials=creds)
+                    load_subscribed_users()
+                    logger.info("Admin Drive service initialized successfully")
+                    return
             else:
-                logger.warning("Admin credentials exist but are invalid")
+                logger.info("No admin credentials found - bot will run in read-only mode")
+                return
+                
         except Exception as e:
-            logger.error(f"Error initializing admin Drive service: {str(e)}")
-    else:
-        logger.info("No admin credentials found - bot will run in read-only mode")
-
-async def check_channel_membership(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Check if user is member of required channel."""
-    try:
-        user = update.effective_user
-        if user.id == ADMIN_USER_ID:  # Skip check for admin
-            return True
-            
-        member = await context.bot.get_chat_member(REQUIRED_CHANNEL, user.id)
-        if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED]:
-            keyboard = [
-                [InlineKeyboardButton("Join Channel", url=f"https://t.me/{REQUIRED_CHANNEL[1:]}")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await context.bot.send_message(
-                chat_id=user.id,
-                text="⚠️ *Please join our channel first*\n\n"
-                     f"You need to join {REQUIRED_CHANNEL} to use this bot.",
-                parse_mode='Markdown',
-                reply_markup=reply_markup
-            )
-            return False
-        return True
-    except Exception as e:
-        logger.error(f"Error checking channel membership: {e}")
-        return True  # Allow access if check fails
+            logger.error(f"Attempt {attempt + 1} failed to initialize Drive service: {str(e)}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+    
+    logger.error("Failed to initialize Drive service after multiple attempts")
 
 def load_subscribed_users():
     """Load users from Google Drive file."""
@@ -1333,6 +1326,17 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     except:
         pass
 
+async def shutdown(signal, loop):
+    """Cleanup tasks tied to the service's shutdown."""
+    logger.info(f"Received exit signal {signal.name}...")
+    
+    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    [task.cancel() for task in tasks]
+    
+    logger.info(f"Cancelling {len(tasks)} outstanding tasks")
+    await asyncio.gather(*tasks, return_exceptions=True)
+    loop.stop()
+
 async def run_bot():
     """Run the Telegram bot with proper initialization"""
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
@@ -1348,7 +1352,8 @@ async def run_bot():
         fallbacks=[
             CallbackQueryHandler(cancel_admin_auth, pattern='^cancel_admin_auth$'),
             CommandHandler('cancel', cancel_admin_auth)
-        ]
+        ],
+        per_message=False
     )
 
     # Conversation handler for user authorization flow
@@ -1456,6 +1461,12 @@ if __name__ == '__main__':
     # Create new event loop for Koyeb compatibility
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    
+    # Register signal handlers
+    signals = (signal.SIGHUP, signal.SIGTERM, signal.SIGINT)
+    for s in signals:
+        loop.add_signal_handler(
+            s, lambda s=s: asyncio.create_task(shutdown(s, loop))
     
     try:
         logger.info("Starting service...")
