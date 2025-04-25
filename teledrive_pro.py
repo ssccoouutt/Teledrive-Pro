@@ -649,7 +649,7 @@ async def cancel_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def start_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start authorization process with cancel button."""
+    """Start authorization process with cancel button and tutorial link."""
     if not await check_channel_membership(update, context):
         return
     
@@ -684,7 +684,8 @@ async def start_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"[Authorize Google Drive]({auth_url})\n\n"
         "2. After approving, you'll see an error page (This is normal).\n"
         "3. Just send me the complete URL from your browser's address bar.\n\n"
-        "⚠️ *Note:* You may see an 'unverified app' warning. Click 'Advanced' then 'Continue'."
+        "⚠️ *Note:* You may see an 'unverified app' warning. Click 'Advanced' then 'Continue'.\n\n"
+        "[📺 Watch Tutorial](https://t.me/techzonefile/2)"
     )
     
     await query.edit_message_text(
