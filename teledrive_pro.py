@@ -34,7 +34,7 @@ from aiohttp import web
 SCOPES = ['https://www.googleapis.com/auth/drive']
 TELEGRAM_BOT_TOKEN = '7404351306:AAHiqgrn0r1uctvPfB1yNyns5qHcMYqatp4'
 CLIENT_SECRET_FILE = 'credentials.json'
-TOKEN_DIR = './tokens'
+TOKEN_DIR = '/app/tokens'
 PREMIUM_FILE_ID = '1726HMqaHlLgiOpvjIeqkOMCq0zrTwitR'
 ADMIN_USER_ID = 990321391
 WHATSAPP_LINK = "https://wa.me/923247220362"
