@@ -1,0 +1,11 @@
+# koyeb.yaml (minimal version)
+app: drivebot-app  # Choose any name for your app
+
+services:
+  - name: drivebot-service  # Your service name
+    image: koyeb/drivebot:latest  # Replace with your actual image
+    ports:
+      - port: 8000  # Must match your bot's port (adjust if needed)
+    volumes:
+      - path: /app/tokens  # Folder where tokens will be stored
+        bucket: drivebot-tokens  # Koyeb auto-creates this storage
