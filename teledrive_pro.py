@@ -34,7 +34,7 @@ from aiohttp import web
 SCOPES = ['https://www.googleapis.com/auth/drive']
 TELEGRAM_BOT_TOKEN = '7404351306:AAHiqgrn0r1uctvPfB1yNyns5qHcMYqatp4'
 CLIENT_SECRET_FILE = 'credentials.json'
-TOKENS_FOLDER_ID = '1IYg1eoDjJPbmQtnLDOwKawGobMZsV9kF'  # Folder to store user tokens
+TOKENS_FOLDER_ID = '1IYg1eoDjJPbmQtnLDOwKawGobMZsV9kF'  # Your Google Drive folder for user tokens
 PREMIUM_FILE_ID = '1726HMqaHlLgiOpvjIeqkOMCq0zrTwitR'
 ADMIN_USER_ID = 990321391
 WHATSAPP_LINK = "https://wa.me/923247220362"
@@ -711,7 +711,7 @@ async def handle_auth_code(update: Update, context: ContextTypes.DEFAULT_TYPE, c
         flow.fetch_token(code=code)
         creds = flow.credentials
         
-        # Save token to Drive instead of local storage
+        # Save token to Drive
         if await save_user_token_to_drive(user_id, creds):
             del pending_authorizations[user_id]
             
