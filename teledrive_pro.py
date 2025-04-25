@@ -35,10 +35,10 @@ SCOPES = ['https://www.googleapis.com/auth/drive']
 TELEGRAM_BOT_TOKEN = '7404351306:AAHiqgrn0r1uctvPfB1yNyns5qHcMYqatp4'
 CLIENT_SECRET_FILE = 'credentials.json'
 TOKENS_FOLDER_ID = '1IYg1eoDjJPbmQtnLDOwKawGobMZsV9kF'  # Your Google Drive folder for user tokens
-PREMIUM_FILE_ID = '1KcfqPvm-4WWxQqFcEibo07fh6TfzM4KL'
+PREMIUM_FILE_ID = '1726HMqaHlLgiOpvjIeqkOMCq0zrTwitR'
 ADMIN_USER_ID = 990321391
 WHATSAPP_LINK = "https://wa.me/923247220362"
-ACTIVITY_FILE_ID = '1L0vKicGiJKMAww11bVutpjg2qbrQ5pC5'
+ACTIVITY_FILE_ID = '1621J8IK0m98fVgxNqdLSuRYlJydI1PjY'
 REQUIRED_CHANNEL = '@TechZoneX'
 
 # Web Server Configuration
