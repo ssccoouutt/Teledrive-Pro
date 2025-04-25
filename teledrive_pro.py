@@ -34,7 +34,7 @@ from aiohttp import web
 SCOPES = ['https://www.googleapis.com/auth/drive']
 TELEGRAM_BOT_TOKEN = '7404351306:AAHiqgrn0r1uctvPfB1yNyns5qHcMYqatp4'
 CLIENT_SECRET_FILE = 'credentials.json'
-TOKEN_DIR = '/app/tokens'
+TOKENS_FOLDER_ID = '1IYg1eoDjJPbmQtnLDOwKawGobMZsV9kF'  # Folder to store user tokens
 PREMIUM_FILE_ID = '1726HMqaHlLgiOpvjIeqkOMCq0zrTwitR'
 ADMIN_USER_ID = 990321391
 WHATSAPP_LINK = "https://wa.me/923247220362"
@@ -116,9 +116,6 @@ FILE_TYPES = {
     'application/vnd.google-apps.folder': 'Folder'
 }
 
-# Create token directory if not exists
-os.makedirs(TOKEN_DIR, exist_ok=True)
-
 async def health_check(request):
     """Health check endpoint for Koyeb"""
     return web.Response(
@@ -166,30 +163,29 @@ async def run_webserver():
     logger.info(f"Health check server running on port {WEB_PORT}")
 
 def initialize_drive_service():
-    """Initialize Drive service with retries"""
+    """Initialize Drive service with owner's token from local file"""
     global drive_service
     max_retries = 3
     retry_delay = 5
     
     for attempt in range(max_retries):
         try:
-            token_path = os.path.join(TOKEN_DIR, 'token.json')
-            if os.path.exists(token_path):
-                creds = Credentials.from_authorized_user_file(token_path, SCOPES)
-                
-                if creds and creds.expired and creds.refresh_token:
-                    creds.refresh(Request())
-                    with open(token_path, 'w') as token:
-                        token.write(creds.to_json())
-                
-                if creds and creds.valid:
-                    drive_service = build('drive', 'v3', credentials=creds)
-                    load_subscribed_users()
-                    logger.info("Admin Drive service initialized successfully")
-                    return
+            # Load token.json from local file
+            if os.path.exists('token.json'):
+                with open('token.json', 'r') as token_file:
+                    token_content = token_file.read()
+                    creds = Credentials.from_authorized_user_info(eval(token_content), SCOPES)
+                    
+                    if creds and creds.expired and creds.refresh_token:
+                        creds.refresh(Request())
+                    
+                    if creds and creds.valid:
+                        drive_service = build('drive', 'v3', credentials=creds)
+                        load_subscribed_users()
+                        logger.info("Drive service initialized successfully with owner token")
+                        return
             else:
-                logger.info("No admin credentials found - bot will run in read-only mode")
-                return
+                logger.error("token.json not found in root directory")
                 
         except Exception as e:
             logger.error(f"Attempt {attempt + 1} failed to initialize Drive service: {str(e)}")
@@ -290,107 +286,98 @@ def save_activity_log(user_id: int, username: str, first_name: str, link: str):
         logger.error(f"Error saving activity log: {e}")
         return False
 
-async def auth_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /auth command for admin Google Drive authorization."""
-    user = update.effective_user
-    
-    if user.id != ADMIN_USER_ID:
-        await update.message.reply_text(
-            "❌ *Permission Denied*\nThis command is for admins only.",
-            parse_mode='Markdown'
-        )
-        return
-    
-    token_path = os.path.join(TOKEN_DIR, 'token.json')
-    if os.path.exists(token_path):
-        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
-        if creds and creds.valid:
-            await update.message.reply_text(
-                "✅ *Already Authorized*\n\n"
-                "Admin Google Drive access is already configured and valid.",
-                parse_mode='Markdown'
-            )
-            return
-    
-    flow = Flow.from_client_secrets_file(
-        CLIENT_SECRET_FILE,
-        scopes=SCOPES,
-        redirect_uri='http://localhost:8080'
-    )
-    auth_url, _ = flow.authorization_url(prompt='consent')
-    pending_authorizations[ADMIN_USER_ID] = flow
-    
-    await update.message.reply_text(
-        "🔑 *Admin Authorization Required*\n\n"
-        "1. Click this link to authorize:\n"
-        f"[Authorize Google Drive]({auth_url})\n\n"
-        "2. After approving, you'll see an error page (This is normal).\n"
-        "3. Send me the complete URL from your browser's address bar.\n\n"
-        "⚠️ *Note:* You may see an 'unverified app' warning. Click 'Advanced' then 'Continue'.",
-        parse_mode='Markdown',
-        disable_web_page_preview=True,
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("❌ Cancel", callback_data='cancel_admin_auth')]
-        ])
-    )
-    return 'WAITING_FOR_ADMIN_CODE'
-
-async def handle_admin_auth_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Process admin authorization code from redirect URL."""
-    user_id = update.message.from_user.id
-    text = update.message.text.strip()
-    auth_code = extract_auth_code(text)
-    
-    if not auth_code or user_id not in pending_authorizations:
-        await update.message.reply_text(
-            "❌ Invalid authorization URL. Please try the /auth command again.",
-            parse_mode='Markdown'
-        )
-        return ConversationHandler.END
+async def get_user_token_from_drive(user_id: int):
+    """Get user token from Google Drive folder."""
+    if not drive_service:
+        return None
     
     try:
-        flow = pending_authorizations[user_id]
-        flow.fetch_token(code=auth_code)
-        creds = flow.credentials
-        token_path = os.path.join(TOKEN_DIR, 'token.json')
+        # Search for user token file in the tokens folder
+        query = f"'{TOKENS_FOLDER_ID}' in parents and name = 'token_{user_id}.json'"
+        response = drive_service.files().list(
+            q=query,
+            fields='files(id)'
+        ).execute()
         
-        with open(token_path, 'w') as token_file:
-            token_file.write(creds.to_json())
-        
-        del pending_authorizations[user_id]
-        
-        global drive_service
-        drive_service = build('drive', 'v3', credentials=creds)
-        load_subscribed_users()
-        
-        await update.message.reply_text(
-            "✅ *Admin Authorization Successful!*\n\n"
-            "The bot can now write to activity.txt and premium.txt files.",
-            parse_mode='Markdown'
-        )
+        files = response.get('files', [])
+        if files:
+            file_id = files[0]['id']
+            request = drive_service.files().get_media(fileId=file_id)
+            token_content = request.execute().decode('utf-8')
+            return Credentials.from_authorized_user_info(eval(token_content), SCOPES)
     except Exception as e:
-        await update.message.reply_text(
-            "❌ *Authorization Failed*\n\n"
-            f"Error: `{str(e)}`\n\n"
-            "Please try again using the /auth command.",
-            parse_mode='Markdown'
-        )
-    finally:
-        return ConversationHandler.END
+        logger.error(f"Error getting user token from Drive: {e}")
+    
+    return None
 
-async def cancel_admin_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Cancel admin authorization process."""
-    query = update.callback_query
-    await query.answer()
+async def save_user_token_to_drive(user_id: int, creds: Credentials):
+    """Save user token to Google Drive folder."""
+    if not drive_service:
+        return False
     
-    if ADMIN_USER_ID in pending_authorizations:
-        del pending_authorizations[ADMIN_USER_ID]
+    try:
+        token_content = creds.to_json()
+        file_name = f'token_{user_id}.json'
+        
+        # Check if file already exists
+        query = f"'{TOKENS_FOLDER_ID}' in parents and name = '{file_name}'"
+        response = drive_service.files().list(
+            q=query,
+            fields='files(id)'
+        ).execute()
+        
+        files = response.get('files', [])
+        
+        media = MediaIoBaseUpload(
+            io.BytesIO(token_content.encode('utf-8')),
+            mimetype='application/json'
+        )
+        
+        if files:
+            # Update existing file
+            file_id = files[0]['id']
+            drive_service.files().update(
+                fileId=file_id,
+                media_body=media
+            ).execute()
+        else:
+            # Create new file
+            file_metadata = {
+                'name': file_name,
+                'parents': [TOKENS_FOLDER_ID]
+            }
+            drive_service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id'
+            ).execute()
+        
+        return True
+    except Exception as e:
+        logger.error(f"Error saving user token to Drive: {e}")
+        return False
+
+async def delete_user_token_from_drive(user_id: int):
+    """Delete user token from Google Drive folder."""
+    if not drive_service:
+        return False
     
-    await query.edit_message_text(
-        "❌ *Admin Authorization Cancelled*",
-        parse_mode='Markdown'
-    )
-    return ConversationHandler.END
+    try:
+        # Search for user token file in the tokens folder
+        query = f"'{TOKENS_FOLDER_ID}' in parents and name = 'token_{user_id}.json'"
+        response = drive_service.files().list(
+            q=query,
+            fields='files(id)'
+        ).execute()
+        
+        files = response.get('files', [])
+        if files:
+            drive_service.files().delete(fileId=files[0]['id']).execute()
+            return True
+    except Exception as e:
+        logger.error(f"Error deleting user token from Drive: {e}")
+    
+    return False
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a welcome message with inline keyboard."""
@@ -512,8 +499,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await cancel_delete(update, context)
     elif query.data == 'cancel_auth':
         await cancel_auth(update, context)
-    elif query.data == 'cancel_admin_auth':
-        await cancel_admin_auth(update, context)
     else:
         try:
             await query.message.delete()
@@ -578,7 +563,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_admin:
         help_text.extend([
             "\n👑 *Admin Commands:*\n",
-            "• /auth - Configure admin Google Drive access\n",
             "• /add [user_id] [basic|premium] - Add user to subscription tier\n",
             "• /remove [user_id|all] - Remove user or all users\n"
         ])
@@ -624,15 +608,13 @@ async def delete_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle confirmed deletion."""
     query = update.callback_query
     user_id = query.from_user.id
-    token_path = get_user_token_path(user_id)
     
     try:
         await query.message.delete()
     except Exception as e:
         logger.warning(f"Could not delete confirmation message: {e}")
     
-    if os.path.exists(token_path):
-        os.remove(token_path)
+    if await delete_user_token_from_drive(user_id):
         response = "✅ *Authorization Removed*\n\nYour Google Drive access has been revoked."
     else:
         response = "ℹ️ *No active authorization found.*"
@@ -673,9 +655,10 @@ async def start_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     query = update.callback_query
     user_id = query.from_user.id
-    token_path = get_user_token_path(user_id)
     
-    if os.path.exists(token_path):
+    # Check if user already has token in Drive
+    existing_creds = await get_user_token_from_drive(user_id)
+    if existing_creds and existing_creds.valid:
         await query.edit_message_text(
             "🔒 *Already Authorized*\n\n"
             "You've already granted Drive access.\n"
@@ -727,26 +710,32 @@ async def handle_auth_code(update: Update, context: ContextTypes.DEFAULT_TYPE, c
         flow = pending_authorizations[user_id]
         flow.fetch_token(code=code)
         creds = flow.credentials
-        token_path = get_user_token_path(user_id)
-        with open(token_path, 'w') as token_file:
-            token_file.write(creds.to_json())
-        del pending_authorizations[user_id]
         
-        keyboard = [
-            [InlineKeyboardButton("📊 View Plans", callback_data='show_plans')],
-            [InlineKeyboardButton("🛠 Help", callback_data='help')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await context.bot.send_message(
-            chat_id=user_id,
-            text="✅ *Authorization Successful!*\n\n"
-                 "You can now copy Drive folders to your account.\n"
-                 "Simply send me a folder link to get started!",
-            parse_mode='Markdown',
-            reply_markup=reply_markup
-        )
+        # Save token to Drive instead of local storage
+        if await save_user_token_to_drive(user_id, creds):
+            del pending_authorizations[user_id]
+            
+            keyboard = [
+                [InlineKeyboardButton("📊 View Plans", callback_data='show_plans')],
+                [InlineKeyboardButton("🛠 Help", callback_data='help')]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="✅ *Authorization Successful!*\n\n"
+                     "You can now copy Drive folders to your account.\n"
+                     "Simply send me a folder link to get started!",
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+        else:
+            raise Exception("Failed to save authorization to Drive")
+            
     except Exception as e:
+        if user_id in pending_authorizations:
+            del pending_authorizations[user_id]
+            
         await context.bot.send_message(
             chat_id=user_id,
             text="❌ *Authorization Failed*\n\n"
@@ -799,8 +788,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if auth_code:
         if user_id in pending_authorizations:
             return await handle_auth_code(update, context, auth_code)
-        elif user_id == ADMIN_USER_ID and ADMIN_USER_ID in pending_authorizations:
-            return await handle_admin_auth_code(update, context)
     
     if 'drive.google.com' in text:
         return await handle_drive_link(update, context)
@@ -851,7 +838,7 @@ async def handle_drive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    creds = authorize_google_drive(user_id)
+    creds = await get_user_token_from_drive(user_id)
     if not creds:
         keyboard = [
             [InlineKeyboardButton("🔑 Connect Google Drive", callback_data='start_auth')],
@@ -974,7 +961,7 @@ async def copy_folder_process(context: ContextTypes.DEFAULT_TYPE, user_id: int, 
     chat_id = job.data['chat_id']
     
     try:
-        creds = authorize_google_drive(user_id)
+        creds = await get_user_token_from_drive(user_id)
         service = build('drive', 'v3', credentials=creds)
         
         await update_progress(context, user_id, "🔍 *Analyzing folder contents...*")
@@ -1158,22 +1145,6 @@ def is_subscribed_user(user_id: int) -> str:
         return 'basic'
     return 'free'
 
-def get_user_token_path(user_id: int) -> str:
-    """Get the path to the user's token file."""
-    return os.path.join(TOKEN_DIR, f'token_{user_id}.json')
-
-def authorize_google_drive(user_id: int) -> Credentials:
-    """Authorize the user with Google Drive."""
-    token_path = get_user_token_path(user_id)
-    creds = None
-    if os.path.exists(token_path):
-        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-            with open(token_path, 'w') as token:
-                token.write(creds.to_json())
-    return creds
-
 async def add_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /add command (admin only)."""
     user = update.message.from_user
@@ -1335,21 +1306,6 @@ async def run_bot():
     """Run the Telegram bot with proper initialization"""
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
-    # Conversation handler for admin authorization
-    admin_auth_conv = ConversationHandler(
-        entry_points=[CommandHandler('auth', auth_command)],
-        states={
-            'WAITING_FOR_ADMIN_CODE': [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_auth_code)
-            ],
-        },
-        fallbacks=[
-            CallbackQueryHandler(cancel_admin_auth, pattern='^cancel_admin_auth$'),
-            CommandHandler('cancel', cancel_admin_auth)
-        ],
-        per_message=False
-    )
-
     # Conversation handler for user authorization flow
     auth_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(start_auth, pattern='^start_auth$')],
@@ -1378,7 +1334,6 @@ async def run_bot():
         application.add_handler(handler)
 
     application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(admin_auth_conv)
     application.add_handler(auth_conv)
 
     application.add_handler(MessageHandler(
