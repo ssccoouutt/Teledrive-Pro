@@ -32,7 +32,7 @@ from aiohttp import web
 
 # Configuration
 SCOPES = ['https://www.googleapis.com/auth/drive']
-TELEGRAM_BOT_TOKEN = '7404351306:AAHiqgrn0r1uctvPfB1yNyns5qHcMYqatp4'
+TELEGRAM_BOT_TOKEN = '7404351306:AAGD7_jXnvtziYhfUhISKhtV9G5DrSYmies'
 CLIENT_SECRET_FILE = 'credentials.json'
 TOKENS_FOLDER_ID = '1IYg1eoDjJPbmQtnLDOwKawGobMZsV9kF'  # Your Google Drive folder for user tokens
 PREMIUM_FILE_ID = '1KcfqPvm-4WWxQqFcEibo07fh6TfzM4KL'
